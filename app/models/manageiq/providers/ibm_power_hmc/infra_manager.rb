@@ -132,9 +132,7 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager < ManageIQ::Providers::Infr
 
   def verify_credentials(_auth_type = nil, _options = {})
     begin
-      connection = connect(:validate => true)
-      fetch_and_store_hmc_version(connection)
-      update_dashboard_capability
+      connect(:validate => true)
     rescue => err
       raise MiqException::MiqInvalidCredentialsError, err.message
     end
@@ -242,26 +240,19 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager < ManageIQ::Providers::Infr
     end
   end
 
-  def fetch_and_store_hmc_version(connection)
-    return unless connection
+  def fetch_and_store_hmc_version_from_console(hmc_console)
+    return unless hmc_console
 
-    begin
-      hmc_console = connection.management_console
-      # HMC version is split across two attributes:
-      # - hmc_console.version contains release (e.g., "V11R1")
-      # - hmc_console.sp_name contains service pack/build (e.g., "1110")
-      version_part = hmc_console.version
-      sp_part = hmc_console.sp_name
-      # Combine both parts to form complete version (e.g., "V11R1 1110")
-      hmc_version = [version_part, sp_part].join(" ")
-      if hmc_version.present?
-        self.api_version = hmc_version
-        save! if changed?
-      end
-    rescue => e
-      $ibm_power_hmc_log.warn("Failed to fetch HMC version: #{e.message}")
-      # Don't fail credential verification if version fetch fails
+    # HMC version is split across two attributes:
+    # - hmc_console.version contains release (e.g., "V11R1")
+    # - hmc_console.sp_name contains service pack/build (e.g., "1110")
+    hmc_version = [hmc_console.version, hmc_console.sp_name].compact.join(" ")
+    if hmc_version.present?
+      self.api_version = hmc_version
+      save! if changed?
     end
+  rescue => e
+    $ibm_power_hmc_log.warn("Failed to store HMC version: #{e.message}")
   end
 
   def self.ems_type
