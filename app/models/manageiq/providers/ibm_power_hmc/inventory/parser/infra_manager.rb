@@ -13,17 +13,24 @@ class ManageIQ::Providers::IbmPowerHmc::Inventory::Parser::InfraManager < Manage
       parse_templates
       parse_ssps
       parse_resource_pools
-      update_ems_version
+      parse_ems
     end
     $ibm_power_hmc_log.info("#{self.class}##{__method__} end")
   end
 
-  def update_ems_version
+  def parse_ems
     hmc = collector.hmc
-    manager.fetch_and_store_hmc_version_from_console(hmc)
-    manager.update_dashboard_capability
+    return unless hmc
+
+    hmc_version = [hmc.version, hmc.sp_name].compact.join(" ")
+    return unless hmc_version.present?
+
+    persister.ext_management_system.build(
+      :guid        => collector.manager.guid,
+      :api_version => hmc_version
+    )
   rescue => e
-    $ibm_power_hmc_log.warn("Failed to update HMC version/dashboard capability: #{e.message}")
+    $ibm_power_hmc_log.warn("Failed to update HMC Details: #{e.message}")
   end
 
   def parse_cecs
