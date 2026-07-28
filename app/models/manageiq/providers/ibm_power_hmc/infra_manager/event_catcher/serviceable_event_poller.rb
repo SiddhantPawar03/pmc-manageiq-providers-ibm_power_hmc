@@ -39,10 +39,10 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
 
   def process_entries(feed)
     entries = feed.dig("feed", "entries") || []
-    entries.each { |entry| persist_entry(entry) }
+    entries.each { |entry| upsert_entry(entry) }
   end
 
-  def persist_entry(entry)
+  def upsert_entry(entry)
     sem       = entry.dig("content", "ServiceableEvent") || {}
     entry_id  = entry["id"]
     published = entry["published"]
@@ -73,6 +73,8 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
       :service_history      => sem.dig("serviceHistoryData", "ServiceHistory")
     }
 
+    encoded_data = Base64.strict_encode64(sem_data.to_json)
+
     event_hash = {
       :event_type => "ServiceableEvent",
       :source     => "IBM_POWER_HMC",
@@ -81,16 +83,32 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
       :message    => prob_uuid,
       :host_name  => failing_mtms,
       :vm_name    => lpar_name,
-      :full_data  => Base64.strict_encode64(sem_data.to_json),
+      :full_data  => encoded_data,
       :ems_id     => @ems.id
     }
 
-    result = EmsEvent.add(@ems.id, event_hash)
+    # Unique lookup key: source + event_type + message (problem UUID)
+    existing = EmsEvent.find_by(
+      :source     => "IBM_POWER_HMC",
+      :event_type => "ServiceableEvent",
+      :message    => prob_uuid
+    )
 
-    if result
-      $ibm_power_hmc_log.info("[ServiceableEvents] persisted event_id=#{result.id} ems_ref=#{entry_id}")
+    if existing.nil?
+      # INSERT — new serviceable event
+      EmsEvent.add(@ems.id, event_hash)
+      $ibm_power_hmc_log.info("[ServiceableEvents] inserted prob_uuid=#{prob_uuid}")
+    elsif existing.full_data != encoded_data
+      # UPDATE — data has changed, overwrite full_data and mapped columns
+      existing.update!(
+        :full_data  => encoded_data,
+        :host_name  => failing_mtms,
+        :vm_name    => lpar_name,
+        :timestamp  => published
+      )
+      $ibm_power_hmc_log.info("[ServiceableEvents] updated prob_uuid=#{prob_uuid} event_id=#{existing.id}")
     else
-      $ibm_power_hmc_log.info("[ServiceableEvents] duplicate ems_ref=#{entry_id}")
+      $ibm_power_hmc_log.info("[ServiceableEvents] unchanged prob_uuid=#{prob_uuid}")
     end
   end
 
