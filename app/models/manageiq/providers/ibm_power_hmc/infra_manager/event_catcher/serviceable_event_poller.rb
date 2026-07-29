@@ -30,7 +30,7 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
   private
 
   def fetch_and_process(connection)
-    sem_xml = connection.fetch_serviceable_events_xml
+    sem_xml = connection.serviceable_events_search
     return if sem_xml.blank?
 
     feed = ManageIQ::Providers::IbmPowerHmc::InfraManager::XmlToJsonTransformer.transform(sem_xml)
@@ -39,10 +39,33 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
 
   def process_entries(feed)
     entries = feed.dig("feed", "entries") || []
-    entries.each { |entry| upsert_entry(entry) }
+    return if entries.empty?
+
+    # ── ONE bulk SELECT for the entire batch ──────────────────────────────────
+    # Fetch only the columns needed for upsert decisions — id, message, full_data.
+    # Build a lightweight Hash keyed by prob_uuid (message) whose value is a
+    # two-element array [id, full_data]. This avoids loading all 30+ AR columns
+    # into memory and keeps the lookup payload as small as possible.
+    #
+    # Result:
+    #   existing_map = {
+    #     "uuid-001" => [42,  "eyJwcm9ibGVtX3..."],   # [db_id, base64_full_data]
+    #     "uuid-002" => [101, "eyJwcm9ibGVtX3..."],
+    #     ...
+    #   }
+    existing_map = EmsEvent
+      .where(:ems_id => @ems.id, :event_type => "ServiceableEvent", :source => "IBM_POWER_HMC")
+      .pluck(:message, :id, :full_data)
+      .each_with_object({}) do |(msg, id, full_data), hash|
+        hash[msg] = [id, full_data]
+      end
+
+    entries.each { |entry| upsert_entry(entry, existing_map) }
   end
 
-  def upsert_entry(entry)
+  # Process a single feed entry using the pre-fetched lookup.
+  # No DB reads happen here — all decisions are made from the in-memory lookup.
+  def upsert_entry(entry, existing_map)
     sem       = entry.dig("content", "ServiceableEvent") || {}
     entry_id  = entry["id"]
     published = entry["published"]
@@ -87,27 +110,24 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
       :ems_id     => @ems.id
     }
 
-    # Unique lookup key: source + event_type + message (problem UUID)
-    existing = EmsEvent.find_by(
-      :source     => "IBM_POWER_HMC",
-      :event_type => "ServiceableEvent",
-      :message    => prob_uuid
-    )
+    # O(1) hash lookup — no DB hit
+    existing_id, existing_full_data = existing_map[prob_uuid]
 
-    if existing.nil?
-      # INSERT — new serviceable event
+    if existing_id.nil?
+      # INSERT — new serviceable event not seen before
       EmsEvent.add(@ems.id, event_hash)
       $ibm_power_hmc_log.info("[ServiceableEvents] inserted prob_uuid=#{prob_uuid}")
-    elsif existing.full_data != encoded_data
-      # UPDATE — data has changed, overwrite full_data and mapped columns
-      existing.update!(
+    elsif existing_full_data != encoded_data
+      # UPDATE — record exists but data has changed
+      EmsEvent.where(:id => existing_id).update_all(
         :full_data  => encoded_data,
         :host_name  => failing_mtms,
         :vm_name    => lpar_name,
         :timestamp  => published
       )
-      $ibm_power_hmc_log.info("[ServiceableEvents] updated prob_uuid=#{prob_uuid} event_id=#{existing.id}")
+      $ibm_power_hmc_log.info("[ServiceableEvents] updated prob_uuid=#{prob_uuid} event_id=#{existing_id}")
     else
+      # SKIP — record exists and data is identical
       $ibm_power_hmc_log.info("[ServiceableEvents] unchanged prob_uuid=#{prob_uuid}")
     end
   end
