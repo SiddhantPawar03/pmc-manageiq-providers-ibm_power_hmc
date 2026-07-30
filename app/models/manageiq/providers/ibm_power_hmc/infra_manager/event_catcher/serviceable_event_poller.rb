@@ -47,12 +47,6 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     # two-element array [id, full_data]. This avoids loading all 30+ AR columns
     # into memory and keeps the lookup payload as small as possible.
     #
-    # Result:
-    #   existing_map = {
-    #     "uuid-001" => [42,  "eyJwcm9ibGVtX3..."],   # [db_id, base64_full_data]
-    #     "uuid-002" => [101, "eyJwcm9ibGVtX3..."],
-    #     ...
-    #   }
     existing_map = EmsEvent
       .where(:ems_id => @ems.id, :event_type => "ServiceableEvent", :source => "IBM_POWER_HMC")
       .pluck(:message, :id, :full_data)
@@ -126,8 +120,6 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
   end
 
   # Extract the plain string value from a transformer node.
-  # The transformer wraps XML elements that carry attributes as:
-  #   { "_value" => "actual-text", "_attr" => { ... } }
   # Plain leaf elements are already a String (or nil).
   def extract_value(node)
     node.is_a?(Hash) ? node["_value"] : node

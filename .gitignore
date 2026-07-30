@@ -16,4 +16,3 @@
 /config/environments/*.local.yml
 /spec/config/secrets.yml
 /spec/manageiq
-.DS_Store

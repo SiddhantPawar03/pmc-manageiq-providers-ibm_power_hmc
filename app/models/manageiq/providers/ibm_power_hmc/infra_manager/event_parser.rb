@@ -22,7 +22,9 @@ module ManageIQ::Providers::IbmPowerHmc::InfraManager::EventParser
     type, uuid = elems[-2], elems[-1]
 
     # Check if the URI also contains /ManagedSystem/{uuid}/
-    host_uuid = elems[-3] if elems.length >= 4 && elems[-4] == "ManagedSystem"
+    if elems.length >= 4 && elems[-4] == "ManagedSystem"
+      host_uuid = elems[-3]
+    end
 
     case type
     when "ManagedSystem"
@@ -58,8 +60,6 @@ module ManageIQ::Providers::IbmPowerHmc::InfraManager::EventParser
       :ems_ref    => entry_id,
       :timestamp  => published,
       :message    => "ServiceableEvent problemNumber=#{prob_num}",
-      # Store the entire entry as Base64-encoded JSON.
-      # Read back: JSON.parse(Base64.decode64(ems_event.full_data)).dig("content", "ServiceableEvent", "problemNumber", "_value")
       :full_data  => Base64.strict_encode64(entry.to_json),
       :ems_id     => ems_id
     }

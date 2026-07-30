@@ -3,25 +3,6 @@ require "rexml/document"
 # Transforms an IBM HMC Atom-feed XML string (as returned by the HMC REST API or
 # embedded in an RTF log file) into a plain Ruby Hash that is JSON-serialisable.
 #
-# This is the Ruby equivalent of the Python transform_209.py reference script.
-# The resulting Hash mirrors the structure produced by that script:
-#
-#   {
-#     "feed" => {
-#       "_attr"   => { … },        # feed-level XML attributes (namespace-stripped)
-#       "id"      => "…",
-#       "title"   => "…",
-#       "entries" => [             # one element per <entry>
-#         {
-#           "id"        => "…",
-#           "published" => "…",
-#           "content"   => { … },
-#           …
-#         }
-#       ]
-#     }
-#   }
-#
 # Usage
 #   hash  = ManageIQ::Providers::IbmPowerHmc::InfraManager::XmlToJsonTransformer.transform(xml_string)
 #   json  = JSON.generate(hash)
