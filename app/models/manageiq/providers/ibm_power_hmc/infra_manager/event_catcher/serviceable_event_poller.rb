@@ -9,7 +9,7 @@ require_relative '../utility/xml_to_json_transformer'
 #   3. Parsing each feed entry and persisting an EmsEvent record via EmsEvent.add.
 #
 class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableEventPoller
-  POLL_INTERVAL = 120 # seconds between successive serviceable-event fetches
+  POLL_INTERVAL = 600 # seconds between successive serviceable-event fetches
 
   def initialize(ems)
     @ems       = ems
@@ -114,21 +114,14 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     existing_id, existing_full_data = existing_map[prob_uuid]
 
     if existing_id.nil?
-      # INSERT — new serviceable event not seen before
       EmsEvent.add(@ems.id, event_hash)
-      $ibm_power_hmc_log.info("[ServiceableEvents] inserted prob_uuid=#{prob_uuid}")
     elsif existing_full_data != encoded_data
-      # UPDATE — record exists but data has changed
       EmsEvent.where(:id => existing_id).update_all(
         :full_data  => encoded_data,
         :host_name  => failing_mtms,
         :vm_name    => lpar_name,
         :timestamp  => published
       )
-      $ibm_power_hmc_log.info("[ServiceableEvents] updated prob_uuid=#{prob_uuid} event_id=#{existing_id}")
-    else
-      # SKIP — record exists and data is identical
-      $ibm_power_hmc_log.info("[ServiceableEvents] unchanged prob_uuid=#{prob_uuid}")
     end
   end
 
