@@ -106,15 +106,21 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
 
     if existing_id.nil?
       EmsEvent.add(@ems.id, event_hash)
-    elsif existing_full_data != sem_data.to_json
-      # Compare as JSON strings so the DB-read value (String) and the freshly
-      # built Hash are always on equal footing — avoids false-positive updates.
-      EmsEvent.where(:id => existing_id).update_all(
-        :full_data  => sem_data,
-        :host_name  => failing_mtms,
-        :vm_name    => lpar_name,
-        :timestamp  => published
-      )
+    else
+      # Normalise the DB value to a JSON string before comparing.
+      # pluck(:full_data) returns a Hash when the column is jsonb, or a raw
+      # String when it is text/json — handle both so the comparison is always
+      # String vs String and never produces a false-positive update.
+      existing_json = existing_full_data.is_a?(Hash) ? existing_full_data.to_json : existing_full_data.to_s
+
+      unless existing_json == sem_data.to_json
+        EmsEvent.where(:id => existing_id).update_all(
+          :full_data  => sem_data,
+          :host_name  => failing_mtms,
+          :vm_name    => lpar_name,
+          :timestamp  => published
+        )
+      end
     end
   end
 
