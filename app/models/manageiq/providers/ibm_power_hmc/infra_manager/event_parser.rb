@@ -10,13 +10,13 @@ module ManageIQ::Providers::IbmPowerHmc::InfraManager::EventParser
       :message    => event.detail,
 
       # Serialize IbmPowerHmc::Event
-      :full_data => {
+      :full_data  => {
         :data     => event.data,
         :detail   => event.detail,
         :usertask => event.usertask
       },
 
-      :ems_id    => ems_id
+      :ems_id     => ems_id
     }
 
     elems = URI(event.data).path.split('/')
@@ -62,9 +62,9 @@ module ManageIQ::Providers::IbmPowerHmc::InfraManager::EventParser
       :message    => "ServiceableEvent problemNumber=#{prob_num}",
 
       # Store complete SEM payload for downstream processing/comparison
-      :full_data => entry,
+      :full_data  => entry,
 
-      :ems_id    => ems_id
+      :ems_id     => ems_id
     }
   end
 end
