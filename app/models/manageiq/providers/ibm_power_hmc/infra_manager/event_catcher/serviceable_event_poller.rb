@@ -47,11 +47,11 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     # into memory and keeps the lookup payload as small as possible.
     #
     existing_map = EmsEvent
-      .where(:ems_id => @ems.id, :event_type => "ServiceableEvent", :source => "IBM_POWER_HMC")
-      .pluck(:message, :id, :full_data)
-      .each_with_object({}) do |(msg, id, full_data), hash|
-        hash[msg] = [id, full_data]
-      end
+                   .where(:ems_id => @ems.id, :event_type => "ServiceableEvent", :source => "IBM_POWER_HMC")
+                   .pluck(:message, :id, :full_data)
+                   .each_with_object({}) do |(msg, id, full_data), hash|
+                     hash[msg] = [id, full_data]
+                   end
 
     entries.each { |entry| upsert_entry(entry, existing_map) }
   end
@@ -111,14 +111,14 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
       # pluck(:full_data) returns a Hash when the column is jsonb, or a raw
       # String when it is text/json — handle both so the comparison is always
       # String vs String and never produces a false-positive update.
-      existing_json = existing_full_data.is_a?(Hash) ? existing_full_data.to_json : existing_full_data.to_s
+      existing_json = existing_full_data.kind_of?(Hash) ? existing_full_data.to_json : existing_full_data.to_s
 
       unless existing_json == sem_data.to_json
-        EmsEvent.where(:id => existing_id).update_all(
-          :full_data  => sem_data,
-          :host_name  => failing_mtms,
-          :vm_name    => lpar_name,
-          :timestamp  => published
+        EmsEvent.find(existing_id).update(
+          :full_data => sem_data,
+          :host_name => failing_mtms,
+          :vm_name   => lpar_name,
+          :timestamp => published
         )
       end
     end
@@ -127,7 +127,7 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
   # Extract the plain string value from a transformer node.
   # Plain leaf elements are already a String (or nil).
   def extract_value(node)
-    node.is_a?(Hash) ? node["_value"] : node
+    node.kind_of?(Hash) ? node["_value"] : node
   end
 
   # Build the Failing Console MTMS string from the transformer-produced SEM hash.
