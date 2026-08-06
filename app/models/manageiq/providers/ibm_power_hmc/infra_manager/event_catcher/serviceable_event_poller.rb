@@ -5,7 +5,7 @@ require_relative '../utility/xml_to_json_transformer'
 # Called from Stream#poll on each loop iteration; responsible for:
 #   1. Deciding whether the configured poll interval has elapsed.
 #   2. Fetching raw XML from the HMC via +connection.fetch_serviceable_events_xml+.
-#   3. Parsing each feed entry and persisting an EmsEvent record via EmsEvent.add.
+#   3. Parsing each feed entry and persisting an EmsEvent record via EmsEvent.add_queue.
 #
 class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableEventPoller
   POLL_INTERVAL = 600 # seconds between successive serviceable-event fetches
@@ -105,7 +105,7 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     existing_id, existing_full_data = existing_map[prob_uuid]
 
     if existing_id.nil?
-      EmsEvent.add(@ems.id, event_hash)
+      EmsEvent.add_queue('add', @ems.id, event_hash)
     else
       # Normalise the DB value to a JSON string before comparing.
       # pluck(:full_data) returns a Hash when the column is jsonb, or a raw

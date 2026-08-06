@@ -41,30 +41,4 @@ module ManageIQ::Providers::IbmPowerHmc::InfraManager::EventParser
 
     event_hash
   end
-
-  # Build an event_hash for a single Serviceable Event (SEM) feed entry.
-  #
-  # @param entry  [Hash]    one element from feed["feed"]["entries"] as produced
-  #                         by XmlToJsonTransformer
-  # @param ems_id [Integer] id of the owning ExtManagementSystem record
-  # @return [Hash]          event_hash ready to pass to EmsEvent.add
-  def self.sem_entry_to_hash(entry, ems_id)
-    sem       = entry.dig("content", "ServiceableEvent") || {}
-    prob_num  = sem.dig("problemNumber", "_value")
-    entry_id  = entry["id"]
-    published = entry["published"]
-
-    {
-      :event_type => "ServiceableEvent",
-      :source     => "IBM_POWER_HMC",
-      :ems_ref    => entry_id,
-      :timestamp  => published,
-      :message    => "ServiceableEvent problemNumber=#{prob_num}",
-
-      # Store complete SEM payload for downstream processing/comparison
-      :full_data  => entry,
-
-      :ems_id     => ems_id
-    }
-  end
 end
