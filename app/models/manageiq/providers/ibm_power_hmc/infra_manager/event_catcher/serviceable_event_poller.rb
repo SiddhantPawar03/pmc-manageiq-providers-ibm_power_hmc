@@ -72,22 +72,22 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     lpar_name    = extract_value(sem["partitionName"])
 
     sem_data = {
-      :problem_uuid         => prob_uuid,
-      :problem_number       => sem.dig("problemNumber", "_value"),
-      :problem_state        => sem.dig("problemState", "_value"),
-      :event_severity       => sem.dig("eventSeverity", "_value"),
-      :reference_code       => sem.dig("referenceCode", "_value"),
-      :notification_type    => sem.dig("notificationType", "_value"),
-      :symptom_string       => sem.dig("symptomString", "_value"),
-      :short_description    => sem.dig("shortDescription", "_value"),
-      :duplicate_count      => sem.dig("duplicateCount", "_value"),
-      :platform_log_id      => sem.dig("platformLogId", "_value"),
-      :failing_mtms         => failing_mtms,
-      :partition_name       => lpar_name,
-      :src_extension_data   => sem["srcExtnData"],
-      :extended_error_files => sem.dig("extendedErrorData", "ExtendedFileData"),
-      :service_history      => sem.dig("serviceHistoryData", "ServiceHistory")
-    }
+      "problem_uuid"         => prob_uuid,
+      "problem_number"       => sem.dig("problemNumber", "_value"),
+      "problem_state"        => sem.dig("problemState", "_value"),
+      "event_severity"       => sem.dig("eventSeverity", "_value"),
+      "reference_code"       => sem.dig("referenceCode", "_value"),
+      "notification_type"    => sem.dig("notificationType", "_value"),
+      "symptom_string"       => sem.dig("symptomString", "_value"),
+      "short_description"    => sem.dig("shortDescription", "_value"),
+      "duplicate_count"      => sem.dig("duplicateCount", "_value"),
+      "platform_log_id"      => sem.dig("platformLogId", "_value"),
+      "failing_mtms"         => failing_mtms,
+      "partition_name"       => lpar_name,
+      "src_extension_data"   => sem["srcExtnData"],
+      "extended_error_files" => sem.dig("extendedErrorData", "ExtendedFileData"),
+      "service_history"      => sem.dig("serviceHistoryData", "ServiceHistory")
+    }.to_json
 
     event_hash = {
       :event_type => "ServiceableEvent",
@@ -107,13 +107,7 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     if existing_id.nil?
       EmsEvent.add_queue('add', @ems.id, event_hash)
     else
-      # Normalise the DB value to a JSON string before comparing.
-      # pluck(:full_data) returns a Hash when the column is jsonb, or a raw
-      # String when it is text/json — handle both so the comparison is always
-      # String vs String and never produces a false-positive update.
-      existing_json = existing_full_data.kind_of?(Hash) ? existing_full_data.to_json : existing_full_data.to_s
-
-      unless existing_json == sem_data.to_json
+      unless JSON.parse(existing_full_data.to_s) == JSON.parse(sem_data)
         EmsEvent.find(existing_id).update(
           :full_data => sem_data,
           :host_name => failing_mtms,
