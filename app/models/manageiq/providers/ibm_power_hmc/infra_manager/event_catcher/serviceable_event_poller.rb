@@ -41,16 +41,15 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     return if entries.empty?
 
     # ── ONE bulk SELECT for the entire batch ──────────────────────────────────
-    # Fetch only the columns needed for upsert decisions — id, message, full_data.
-    # Build a lightweight Hash keyed by prob_uuid (message) whose value is a
-    # two-element array [id, full_data]. This avoids loading all 30+ AR columns
-    # into memory and keeps the lookup payload as small as possible.
+    # Fetch only the columns needed for change-detection — message and full_data.
+    # Build a lightweight Hash keyed by prob_uuid (message) → full_data so that
+    # each entry lookup is O(1) with no additional DB hits.
     #
     existing_map = EmsEvent
                    .where(:ems_id => @ems.id, :event_type => "ServiceableEvent", :source => "IBM_POWER_HMC")
-                   .pluck(:message, :id, :full_data)
-                   .each_with_object({}) do |(msg, id, full_data), hash|
-                     hash[msg] = [id, full_data]
+                   .pluck(:message, :full_data)
+                   .each_with_object({}) do |(msg, full_data), hash|
+                     hash[msg] = full_data
                    end
 
     entries.each { |entry| upsert_entry(entry, existing_map) }
@@ -102,19 +101,13 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     }
 
     # O(1) hash lookup — no DB hit
-    existing_id, existing_full_data = existing_map[prob_uuid]
+    existing_full_data = existing_map[prob_uuid]
 
-    if existing_id.nil?
+    # Always add a new record when there is no existing entry OR when the
+    # event data has changed. Updating in-place is intentionally avoided so
+    # that every state change is preserved as a separate EmsEvent row.
+    if existing_full_data.nil? || existing_full_data != sem_data
       EmsEvent.add_queue('add', @ems.id, event_hash)
-    else
-      unless existing_full_data == sem_data
-        EmsEvent.find(existing_id).update(
-          :full_data => sem_data,
-          :host_name => failing_mtms,
-          :vm_name   => lpar_name,
-          :timestamp => published
-        )
-      end
     end
   end
 
