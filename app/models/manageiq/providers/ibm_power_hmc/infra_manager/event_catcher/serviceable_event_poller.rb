@@ -1,5 +1,3 @@
-require 'net/http'
-require 'uri'
 require 'json'
 require_relative '../utility/xml_to_json_transformer'
 
@@ -7,20 +5,16 @@ require_relative '../utility/xml_to_json_transformer'
 #
 # Called from Stream#poll on each loop iteration; responsible for:
 #   1. Deciding whether the configured poll interval has elapsed.
-#   2. Fetching raw XML from the HMC via +connection.fetch_serviceable_events_xml+.
-#   3. Parsing each feed entry and persisting an EmsEvent record via EmsEvent.add_queue.
+#   2. Fetching raw XML from the HMC via +connection.serviceable_events_search+.
+#   3. Parsing each feed entry and creating (EmsEvent.add_queue) or updating
+#      the matching EmsEvent record.
 #
 class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableEventPoller
   POLL_INTERVAL = 600 # seconds between successive serviceable-event fetches
 
   def initialize(ems)
-    @ems          = ems
-    @last_poll    = Time.now.utc.to_i - POLL_INTERVAL
-    # Tracks keys queued in previous poll cycles that may not yet be visible
-    # through the API (e.g. still being processed by the worker queue).
-    # Prevents re-queueing between the moment a record is enqueued and the
-    # moment it becomes visible in the REST API response.
-    @pending_keys = Set.new
+    @ems       = ems
+    @last_poll = Time.now.utc.to_i - POLL_INTERVAL
   end
 
   # Poll serviceable events if the interval has elapsed.
@@ -49,23 +43,32 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     return if entries.empty?
 
     # ── ONE bulk SELECT for the entire batch ──────────────────────────────────
-    # Fetch message + last_reported_timestamp for all already-persisted
-    # ServiceableEvents for this EMS.  The first level is the composite key
-    # "prob_uuid_problem_state" (message); the second level is the set of
-    # last_reported_timestamp values already stored for that message.  An event
-    # already exists only when BOTH match, so a change of only
-    # lastReportedTimestamp upstream is detected as a new version.
-    # message => Set of timestamp keys already stored
-    existing_keys = Hash.new { |h, k| h[k] = Set.new }
+    # Fetch id + message + full_data for all already-persisted ServiceableEvents
+    # for this EMS.  The key is the composite "prob_uuid_problem_state" (message).
+    # For each message we keep the id of the row and the canonical string form of
+    # its stored full_data, so an upstream change can be detected by a plain
+    # string comparison.  Rows are read in id order, so when old duplicates share
+    # a message the newest row wins.
+    # message => {:id => Integer, :data => String}
+    existing_keys = {}
     EmsEvent.where(:ems_id => @ems.id, :event_type => "ServiceableEvent", :source => "IBM_POWER_HMC")
-            .pluck(:message, :last_reported_timestamp)
-            .each { |msg, ts| existing_keys[msg] << ts_key(ts) }
+            .order(:id)
+            .pluck(:id, :message, :full_data)
+            .each { |id, msg, data| existing_keys[msg] = {:id => id, :data => canonical_string(data)} }
 
-    entries.each { |entry| upsert_entry(entry, existing_keys) }
+    # A failure on one entry must not prevent the remaining entries from being
+    # processed in this poll.
+    entries.each do |entry|
+      upsert_entry(entry, existing_keys)
+    rescue => err
+      $ibm_power_hmc_log.error("[ServiceableEvents] entry id=#{entry["id"]} failed: #{err.class}: #{err.message}")
+    end
   end
 
-  # Process a single feed entry using the pre-fetched key set.
-  # No DB reads happen here — all decisions are made from the in-memory set.
+  # Process a single feed entry using the pre-fetched key map.
+  #   - message not found            → create a new record (queued)
+  #   - found, full_data identical   → nothing to do
+  #   - found, full_data differs     → update the existing record in place
   def upsert_entry(entry, existing_keys)
     sem       = entry.dig("content", "ServiceableEvent") || {}
     entry_id  = entry["id"]
@@ -77,8 +80,15 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
     # vm_name   → Partition Name
     prob_uuid     = extract_value(sem["problemUuid"])
     problem_state = extract_value(sem["problemState"])
-    failing_mtms  = build_failing_mtms(sem)
-    lpar_name     = extract_value(sem["partitionName"])
+
+    # Without a problem UUID the message key would be just "_<state>"
+    if prob_uuid.blank?
+      $ibm_power_hmc_log.warn("[ServiceableEvents] skipping entry id=#{entry_id}: problemUuid is missing")
+      return
+    end
+
+    failing_mtms = build_failing_mtms(sem)
+    lpar_name    = extract_value(sem["partitionName"])
 
     sem_data = {
       :problem_uuid              => prob_uuid,
@@ -116,42 +126,61 @@ class ManageIQ::Providers::IbmPowerHmc::InfraManager::EventCatcher::ServiceableE
       :service_history           => sem.dig("serviceHistoryData", "ServiceHistory")
     }
 
-    # lastReportedTimestamp is epoch milliseconds, stored as an integer in
-    # event_streams.last_reported_timestamp.
-    last_reported = parse_epoch_ms(sem["lastReportedTimestamp"])
-
     event_hash = {
-      :event_type              => "ServiceableEvent",
-      :source                  => "IBM_POWER_HMC",
-      :ems_ref                 => entry_id,
-      :timestamp               => published,
-      :last_reported_timestamp => last_reported,
-      :message                 => "#{prob_uuid}_#{problem_state}",
-      :host_name               => failing_mtms,
-      :vm_name                 => lpar_name,
-      :full_data               => sem_data,
-      :ems_id                  => @ems.id
+      :event_type => "ServiceableEvent",
+      :source     => "IBM_POWER_HMC",
+      :ems_ref    => entry_id,
+      :timestamp  => published,
+      :message    => "#{prob_uuid}_#{problem_state}",
+      :host_name  => failing_mtms,
+      :vm_name    => lpar_name,
+      :full_data  => sem_data,
+      :ems_id     => @ems.id
     }
 
-    # In-memory check — no DB hit.  First level: message
-    # ("prob_uuid_problem_state"); second level: last_reported_timestamp.
     message_key = "#{prob_uuid}_#{problem_state}"
-    ts          = ts_key(last_reported)
-    return if existing_keys.key?(message_key) && existing_keys[message_key].include?(ts)
+    new_data    = canonical_string(sem_data)
+    existing    = existing_keys[message_key]
 
-    EmsEvent.add_queue('add', @ems.id, event_hash)
-    existing_keys[message_key] << ts
+    if existing.nil?
+      # No record for this message yet → create it.
+      EmsEvent.add_queue('add', @ems.id, event_hash)
+      existing_keys[message_key] = {:id => nil, :data => new_data}
+    elsif existing[:data] != new_data
+      # Record exists but upstream data changed → update it in place.
+      update_existing(existing, event_hash, new_data)
+    end
   end
 
-  # Canonical string used to compare last_reported_timestamp values.
-  def ts_key(value)
-    value&.to_s
+  # Update the stored row for an existing message with the latest upstream values.
+  # A queued-but-not-yet-persisted row (:id nil) cannot be updated; it already
+  # carries the data that was queued earlier in this poll.
+  def update_existing(existing, event_hash, new_data)
+    return if existing[:id].nil?
+
+    EmsEvent.find(existing[:id]).update!(
+      :full_data => event_hash[:full_data],
+      :host_name => event_hash[:host_name],
+      :vm_name   => event_hash[:vm_name]
+    )
+    existing[:data] = new_data
+    $ibm_power_hmc_log.info("[ServiceableEvents] updated event_id=#{existing[:id]} message=#{event_hash[:message]}")
+  rescue => err
+    $ibm_power_hmc_log.error("[ServiceableEvents] update failed event_id=#{existing[:id]} #{err.class}: #{err.message}")
   end
 
-  # Parse an epoch-milliseconds node into an Integer; nil when absent/invalid.
-  def parse_epoch_ms(node)
-    str = extract_value(node).to_s.strip
-    str.match?(/\A\d+\z/) ? str.to_i : nil
+  # Canonical string form of a value, used to compare upstream data with the
+  # stored full_data.
+  def canonical_string(value)
+    JSON.generate(canonicalize(value))
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash  then value.map { |k, v| [k.to_s, canonicalize(v)] }.sort_by(&:first).to_h
+    when Array then value.map { |v| canonicalize(v) }
+    else value
+    end
   end
 
   # Extract the plain string value from a transformer node.
